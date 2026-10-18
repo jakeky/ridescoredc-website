@@ -24,10 +24,16 @@ Part of the [RidescoreDC](https://github.com/civictechdc/ridescoredc) project by
 
 ## Developer Spinup
 
+For step-by-step instructions, use the [Frontend Developer Guide](docs/local-frontend-development.md)
+for page changes or the [Full Stack Developer Guide](docs/local-fullstack-development.md)
+for a local database, API, and tile server. The quick start below runs the full stack.
+
 ### Prerequisites
 
 - [Docker Desktop](https://www.docker.com/products/docker-desktop/)
 - Git
+- Node.js 22.12 or newer (includes npm)
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) for loading data and applying migrations
 
 ### 1. Clone and configure
 
@@ -36,18 +42,21 @@ git clone https://github.com/civictechdc/ridescoredc-website
 cd ridescoredc-website
 ```
 
-Copy the example environment file and adjust as needed:
+Copy both example environment files. The defaults are suitable for local development:
 
 ```bash
 cp api/.env.example api/.env
+cp .env.example .env
 ```
 
-The env file lives in `api/` — Compose reads it via `env_file` (see `docker-compose.yml`), and on the server the app loads the same file directly. The defaults are fine for local development.
+In PowerShell, use `Copy-Item` in place of `cp`. `api/.env` holds the database connection
+and password; `.env` holds local settings such as `DB_PORT` and `DB_DATA_DIR`. Both are
+ignored by Git. See the full-stack guide if a local port is already in use.
 
 ### 2. Start the stack
 
 ```bash
-docker compose up
+npm run stack
 ```
 
 This starts four services:
@@ -55,31 +64,36 @@ This starts four services:
 | Service | Address | Purpose |
 |---|---|---|
 | `nginx` | http://localhost:8000 | Reverse proxy — the single entry point |
-| `fastapi` | internal | FastAPI app + frontend, serves `index.html` |
+| `fastapi` | internal | FastAPI survey API |
 | `martin` | internal | MVT tile server |
 | `db` | localhost:5432 | PostGIS database |
 
-Open the app at **http://localhost:8000** — that's NGINX, which routes `/tiles/` to Martin and everything else (the app, static files, and `/api`) to FastAPI. Only NGINX and the database are published to the host; `fastapi` and `martin` are reached *through* NGINX, exactly as on the servers.
+Open the app at **http://localhost:8000** — that's NGINX, which serves `frontend/` directly, routes `/tiles/` to Martin, and routes `/api/` and `/health` to FastAPI. Only NGINX and the database are published to the host; `fastapi` and `martin` are reached *through* NGINX, exactly as on the servers.
 
-The `fastapi` service runs the stock `python:3.12-slim` image with `api/` mounted in, installing its dependencies on start — so the first boot takes a little longer while pip runs. If the database container isn't ready yet, the API retries the connection for up to 20 seconds before serving. (The database **schema** is no longer patched here on boot — it's managed by yoyo migrations in [ridescoredc-models](https://github.com/civictechdc/ridescoredc-models).)
+The `fastapi` service runs the stock `python:3.12-slim` image with `api/` mounted in, installing its dependencies on start — so the first boot takes a little longer while pip runs. If the database container isn't ready yet, the API retries the connection for up to 20 seconds before serving. The survey tables are created separately by this repository's yoyo migrations in `api/migrations/`, applied in step 3.
 
-**Routing mirrors staging and production.** Both locally and on the servers, **NGINX is the front door and routes by path** — `/api` → `fastapi` and `/tiles/` → Martin — so the frontend uses relative URLs (`/tiles/update_score/...`) that work in every environment. This is a deliberate convention: **tiles must go through `/tiles/` to Martin**, and because Martin isn't reachable any other way locally, a hardcoded direct URL fails in dev instead of silently breaking in production. Locally the proxy config lives at `nginx/default.conf`; on the servers NGINX lives outside this repo (ask an org admin to see or change it).
+**Routing mirrors staging and production.** Both locally and on the servers, **NGINX is the front door and routes by path** — `/api` → `fastapi` and `/tiles/` → Martin — so the frontend uses relative URLs (`/tiles/update_score/...`) that work in every environment. This is a deliberate convention: **tiles must go through `/tiles/` to Martin**, and because Martin isn't reachable any other way locally, a hardcoded direct URL fails in dev instead of silently breaking in production. Locally the proxy config lives at `nginx/default.conf`; `nginx/server.conf.example` documents the server routing (ask an org admin to apply server configuration changes).
 
-### 3. Seed the database from production
+### 3. Load the published data and create the survey tables
 
-The app expects an existing database — most importantly the `ridescoredc` road-data table, which is **not** created by this repo. **Request a copy of the production SQL dump (`dev_backup.sql`) from an org admin.** It is a plain `pg_dump` file and is intentionally kept out of version control.
-
-With the stack running, load the dump into the database container with `psql` (run this in a separate terminal):
+Leave the stack running and use a second terminal in the repository:
 
 ```bash
-docker compose exec -T db psql -U postgres -d db < dev_backup.sql
+npm run setup
 ```
 
-This writes the imported data into `pg_data/` (see [Database](#database) below), so you only need to do it once — the data persists across restarts. The survey tables are **not** created here — they're part of the schema managed by yoyo migrations in [ridescoredc-models](https://github.com/civictechdc/ridescoredc-models); apply those against your local `db` to get them.
+This runs `npm run data` to download the published roads, crashes, scores, and serving SQL,
+then `npm run migrate` to create the survey tables. The data loader also restarts Martin so
+it discovers the loaded tile sources. **A production database dump is not needed.**
+
+The data version is recorded in `data.load_record`. For selecting a particular version or
+loading a package built locally, see the [full-stack guide](docs/local-fullstack-development.md#loading-different-data-versions).
 
 ### 4. Open the app
 
-Navigate to [http://localhost:8000](http://localhost:8000). Refresh after seeding to see the road data appear.
+Open the [map](http://localhost:8000/) or the [survey](http://localhost:8000/survey/).
+Check [API health](http://localhost:8000/health) for `{"status":"ok"}`. A healthy API alone
+does not mean the road data has been loaded; check that streets appear on the map too.
 
 ### 5. Tear down
 
@@ -87,31 +101,37 @@ Navigate to [http://localhost:8000](http://localhost:8000). Refresh after seedin
 docker compose down
 ```
 
-To also wipe the database volume (this deletes your restored production data — you'll need to restore the dump again):
-
-```bash
-docker compose down -v
-rm -rf pg_data/
-```
+This stops the containers and preserves the database files. For a fresh local database,
+follow [Starting over](docs/local-fullstack-development.md#starting-over); that section
+also explains how to keep the old data by choosing another `DB_DATA_DIR`.
 
 ---
 
 ## Database
 
-Local development starts from a **copy of the production database**, not from an empty schema. Request the production SQL dump (`dev_backup.sql`) from an org admin and load it via `psql` as part of getting set up (see step 3 above).
+The database has three schemas with separate responsibilities:
 
-- **`dev_backup.sql`** is a plain-text `pg_dump` of production — the *input* to a restore. You load it by piping it through `psql` against the running database container; you never place it inside `pg_data/`. It is not committed to this repo (request it from an admin).
-- **`pg_data/`** is Postgres's own on-disk data directory, mounted into the PostgreSQL container. It is the *result* of the restore — where the imported data actually lives — and it persists across `docker compose down` (but not `down -v`), so you only restore the dump once. It is **deliberately excluded from version control** (see `.gitignore`): it holds real data and is machine-local, so never commit it.
-- **The survey tables** (submissions + segments) are no longer created by this repo at boot. Their schema is managed by yoyo migrations in [ridescoredc-models](https://github.com/civictechdc/ridescoredc-models) (`live/schema/0002_survey.sql`); the work-in-progress copy of that DDL lives there as `live/schema/wip-patch.sql`.
-- **`api/migrations/`** holds one-off schema migrations from before the yoyo migration.
+| Schema | Holds | Updated by |
+|---|---|---|
+| `data` | Published roads, crashes, and scores | `npm run data` |
+| `serving` | Views and functions used by Martin | The published serving bundle, loaded with the data |
+| `app` | Survey responses | FastAPI; schema changes in `api/migrations/` |
 
-The road-data pipeline that produces the `ridescoredc` table lives in [ridescoredc-models](https://github.com/civictechdc/ridescoredc-models).
+Survey responses record durable `segment_id` values and the source package version.
+Reloading road data replaces the derived `data` and `serving` schemas, not survey responses.
+
+PostgreSQL stores its local files in `pg_data/`, or the directory selected by `DB_DATA_DIR`.
+This is a bind mount, so the files survive both `docker compose down` and `down -v`.
+It is ignored by Git and should never be committed. `api/migrations-legacy/` is historical;
+current survey migrations are in `api/migrations/`.
+
+The scoring pipeline lives in [ridescoredc-models](https://github.com/civictechdc/ridescoredc-models).
 
 ---
 
 ## Deploy
 
-Deployment is driven entirely by Git. You develop on a feature branch, verify it locally with the linter and tests, then open a pull request into `develop`. Merging to `develop` deploys to staging; merging to `main` deploys to production. GitHub Actions runs the same lint and test checks on every push and pull request, and a branch that fails them cannot be deployed.
+Deployment is driven entirely by Git. You develop on a feature branch, verify it locally with the linter and tests, then open a pull request into `develop`. Merging to `develop` deploys to staging; merging to `main` deploys to production. GitHub Actions runs the same lint and test checks on pushes and pull requests to `develop` and `main`, and a branch that fails them cannot be deployed.
 
 ### Branching (Gitflow)
 
@@ -148,12 +168,13 @@ CI runs on every push and pull request to `develop` and `main`.
 
 | Job | Trigger | What it does |
 |---|---|---|
-| `lint` | all branches | Runs Ruff on `api/` |
-| `test` | all branches | Runs Pytest against mocked DB |
+| `lint` | PRs, pushes to `develop`/`main` | Runs Ruff on `api/` |
+| `test` | PRs, pushes to `develop`/`main` | Runs Pytest against mocked DB |
+| `check-migrations` | PRs, pushes to `develop`/`main` | Applies survey migrations to PostgreSQL and checks a second apply changes nothing |
 | `stage` | push to `develop` | Deploys to [dev.ridescoredc.com](https://dev.ridescoredc.com) |
 | `deploy` | push to `main` | Deploys to [ridescoredc.com](https://ridescoredc.com) |
 
-The `stage` and `deploy` jobs only run after `lint` and `test` pass.
+The `stage` and `deploy` jobs wait for the required CI checks. Deployment applies survey migrations before restarting FastAPI and Martin. Loading a new road-data package is a separate operation.
 
 When you open a pull request from your feature branch into `develop`, **check the GitHub Actions tab (or the checks on the PR) and confirm `lint` and `test` pass** before asking for review. Fix any failures and push again — the checks re-run automatically.
 
@@ -170,25 +191,27 @@ Deployments use SSH keys stored as GitHub Actions secrets (`STG_SSH_PRIVATE_KEY`
 ```
 ridescoredc-website/
 ├── api/
-│   ├── main.py              # FastAPI app (endpoints + static file serving)
+│   ├── main.py              # Survey submission API and database health
 │   ├── requirements.txt     # Production dependencies
 │   ├── requirements-dev.txt # Dev/test dependencies
-│   ├── .env.example         # Env template (copy to .env — gitignored)
-│   ├── migrations/
-│   ├── static/
-│   │   ├── index.html       # Main map UI
-│   │   └── feedback_mvp.html
-│   └── tests/
-│       ├── conftest.py
-│       └── test_api.py
+│   ├── .env.example         # API/database settings template
+│   ├── migrations/          # Current app-schema migrations
+│   ├── yoyo.ini             # Migration configuration
+│   └── tests/               # API tests
+├── frontend/
+│   ├── index.html           # Scored map
+│   ├── survey/index.html    # Survey with unscored road geometry
+│   └── src/shared/          # Shared map configuration and controls
+├── docs/                    # Frontend and full-stack developer guides
 ├── nginx/
-│   └── default.conf         # Local reverse proxy (/tiles/ -> martin, / -> fastapi)
+│   ├── default.conf         # Local routing and static pages
+│   └── server.conf.example  # Server configuration reference
 ├── scripts/
-│   └── gitlab-ci/
-│       └── deployment.sh    # Remote deployment script
+│   ├── load_data.py         # Load published road data and serving SQL
+│   ├── migrate.py           # Apply this repository's survey migrations
+│   └── gitlab-ci/deployment.sh # Deployment script used by GitHub Actions
+├── .env.example             # Local ports, data directory, Vite upstream
 ├── docker-compose.yml
-├── martin.yaml              # Tile server config
-└── .github/
-    └── workflows/
-        └── ci.yml
+├── martin.yaml              # Tile server configuration
+└── .github/workflows/ci.yml
 ```
