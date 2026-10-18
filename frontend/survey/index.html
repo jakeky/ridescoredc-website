@@ -2144,6 +2144,8 @@ function openSurveyPanel() {
   surveySegments  = buildContiguousSegments();
   surveyCur       = 0;
   surveyAnswers   = surveySegments.map(() => ({ lts_perceived: null, safety_rating: null, stress_factors: [] }));
+  /* Un-highlight the roads from any earlier opening before forgetting them (#24) */
+  setSurveyActiveFeatureState([...surveyActiveFids], false);
   surveyActiveFids.clear();
   surveyShowSummary = false;
   sumTime = null; sumSat = null; sumRideAgain = null; sumTripPurpose = null;
