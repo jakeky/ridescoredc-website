@@ -1,3 +1,4 @@
+from copy import deepcopy
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -103,3 +104,63 @@ def test_submission_db_error():
         with TestClient(app) as c:
             response = c.post("/api/submissions", json=VALID_PAYLOAD)
     assert response.status_code == 500
+
+
+# Invalid surveys must be rejected before opening a database connection. Rating
+# limits match api/migrations/0001_app_schema.sql; skipped ratings stay optional.
+@pytest.mark.parametrize("field,value", [
+    ("segment_ids", []),
+    ("segment_ids", [""]),
+    ("segment_ids", ["   "]),
+    ("contiguous_segments", []),
+    ("overall_satisfaction", 0),
+    ("overall_satisfaction", 6),
+    ("overall_satisfaction", 99),
+])
+def test_invalid_submission_is_rejected_before_database(client, field, value):
+    payload = deepcopy(VALID_PAYLOAD)
+    payload[field] = value
+    with patch("main.get_conn") as get_conn:
+        response = client.post("/api/submissions", json=payload)
+    assert response.status_code == 422
+    assert any(error["loc"][:2] == ["body", field]
+               for error in response.json()["detail"])
+    get_conn.assert_not_called()
+
+
+@pytest.mark.parametrize("field,value", [
+    ("segment_ids", []),
+    ("segment_ids", [""]),
+    ("segment_ids", ["   "]),
+    ("sequence_index", -1),
+    ("lts_perceived", 0),
+    ("lts_perceived", 5),
+    ("safety_rating", 0),
+    ("safety_rating", 11),
+])
+def test_invalid_segment_is_rejected_before_database(client, field, value):
+    payload = deepcopy(VALID_PAYLOAD)
+    payload["contiguous_segments"][0][field] = value
+    with patch("main.get_conn") as get_conn:
+        response = client.post("/api/submissions", json=payload)
+    assert response.status_code == 422
+    assert any(error["loc"][:4] == ["body", "contiguous_segments", 0, field]
+               for error in response.json()["detail"])
+    get_conn.assert_not_called()
+
+
+@pytest.mark.parametrize("lts,safety,satisfaction", [(1, 1, 1), (4, 10, 5), (None, None, None)])
+def test_rating_boundaries_and_skipped_ratings_are_accepted(client, lts, safety, satisfaction):
+    payload = deepcopy(VALID_PAYLOAD)
+    payload["contiguous_segments"][0]["lts_perceived"] = lts
+    payload["contiguous_segments"][0]["safety_rating"] = safety
+    payload["overall_satisfaction"] = satisfaction
+    assert client.post("/api/submissions", json=payload).status_code == 201
+
+
+def test_omitted_optional_ratings_are_accepted(client):
+    payload = deepcopy(VALID_PAYLOAD)
+    del payload["contiguous_segments"][0]["lts_perceived"]
+    del payload["contiguous_segments"][0]["safety_rating"]
+    del payload["overall_satisfaction"]
+    assert client.post("/api/submissions", json=payload).status_code == 201

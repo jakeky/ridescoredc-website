@@ -2,12 +2,12 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import Annotated, List, Optional
 
 import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 
@@ -57,20 +57,23 @@ app.add_middleware(
 
 # ── Request models ──────────────────────────────────────────────────────────
 
+SegmentId = Annotated[str, Field(min_length=1, pattern=r"\S")]
+
+
 class ContiguousSegment(BaseModel):
-    sequence_index: int
+    sequence_index: int = Field(ge=0)
     route_name: Optional[str] = None
-    segment_ids: List[str]
-    lts_perceived: Optional[int] = None
-    safety_rating: Optional[int] = None
+    segment_ids: List[SegmentId] = Field(min_length=1)
+    lts_perceived: Optional[int] = Field(default=None, ge=1, le=4)
+    safety_rating: Optional[int] = Field(default=None, ge=1, le=10)
     stress_factors: Optional[List[str]] = None
 
 
 class SurveySubmission(BaseModel):
-    segment_ids: List[str]
-    contiguous_segments: List[ContiguousSegment]
+    segment_ids: List[SegmentId] = Field(min_length=1)
+    contiguous_segments: List[ContiguousSegment] = Field(min_length=1)
     time_of_day: Optional[str] = None
-    overall_satisfaction: Optional[int] = None
+    overall_satisfaction: Optional[int] = Field(default=None, ge=1, le=5)
     would_ride_again: Optional[str] = None
     trip_purpose: Optional[str] = None
     comments: Optional[str] = None
